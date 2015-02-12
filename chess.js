@@ -118,6 +118,13 @@ function Square(i, j) {
     this.j = j;
 }
 
+function Move(fromI, fromJ, toI, toJ) {
+    this.fromI = fromI;
+    this.fromJ = fromJ;
+    this.toI = toI;
+    this.toI = toJ;
+}
+
 function Board(otherBoard) {
     var i, j;
     if (otherBoard) {
@@ -131,6 +138,7 @@ function Board(otherBoard) {
         this.highBlackCastleOption = otherBoard.highBlackCastleOption;
         this.lowWhiteCastleOption = otherBoard.lowWhiteCastleOption;
         this.highWhiteCastleOption = otherBoard.highWhiteCastleOption;
+        this.lastMove = otherBoard.lastMove;
     } else {
         // start fresh: looks weird because [x][y] notation is transposed
         this[0] = ['br', 'bp', '', '', '', '', 'wp', 'wr'];
@@ -145,6 +153,7 @@ function Board(otherBoard) {
         this.highBlackCastleOption = true;
         this.lowWhiteCastleOption = true;
         this.highWhiteCastleOption = true;
+        this.lastMove = null;
     }
 }
 
@@ -156,8 +165,6 @@ function GameState() {
     this.moves = [];
     this.takenBlack = [];
     this.takenWhite = [];
-    this.computerFrom = null; // keep a record of computer's last move for display
-    this.computerTo = null;
 }
 
 //------------------------------------------------- heuristic scoring -----------------------------------------------------
@@ -261,7 +268,7 @@ function scoreBoard (board) {
 }
 
 // Return an array of the pieces on the board which could attack the given square (if a piece of the opposite colour were there)
-// ignoring issues of check.
+// ignoring issues of check, and ignoring en passant
 function canAttack (board, square) {
     var attackers = [];
     var p, i, j, first;
@@ -347,7 +354,7 @@ function canAttack (board, square) {
 
 //------------------------------------------------------- move basics ---------------------------------------------------
 
-// make a list of moves not taking 'check' into account, not including castling (which involves check)
+// make a list of moves not taking 'check' into account, e.g. not including castling (which involves check)
 function findPossibleRegularMoves (board, square) {
     var i, j;
     var moves = [];
@@ -360,6 +367,15 @@ function findPossibleRegularMoves (board, square) {
             if(square.j === 1 && board[square.i][2] === '' && board[square.i][3]=='') moves.push(new Square(square.i, 3));
             if(square.i > 0 && board[square.i-1][square.j+1][0] === 'w') moves.push(new Square(square.i-1, square.j+1));
             if(square.i < 7 && board[square.i+1][square.j+1][0] === 'w') moves.push(new Square(square.i+1, square.j+1));
+            // en passant - check if last move was a pawn moving two forward
+            if(board.lastMove !== null && square.j === 4 && board.lastMove[3] === 4 && board[board.lastMove[2]][4] === 'wp'
+                    && board.lastMove[1] === 6){
+                if (board.lastMove[2] === square.i-1) {
+                    moves.push(new Square(square.i-1, 5));
+                } else if (board.lastMove[2] === square.i+1) {
+                    moves.push(new Square(square.i+1, 5));
+                }
+            }
         }
     } else if (p === 'wp') {
         if(square.j > 0) {
@@ -367,6 +383,15 @@ function findPossibleRegularMoves (board, square) {
             if(square.j === 6 && board[square.i][5] === '' && board[square.i][4]=='') moves.push(new Square(square.i, 4));
             if(square.i > 0 && board[square.i-1][square.j-1][0] === 'b') moves.push(new Square(square.i-1, square.j-1));
             if(square.i < 7 && board[square.i+1][square.j-1][0] === 'b') moves.push(new Square(square.i+1, square.j-1));
+            // en passant - check if last move was a pawn moving two forward
+            if(board.lastMove !== null && square.j === 3 && board.lastMove[3] === 3 && board[board.lastMove[2]][3] === 'bp'
+                    && board.lastMove[1] === 1){
+                if (board.lastMove[2] === square.i-1) {
+                    moves.push(new Square(square.i-1, 2));
+                } else if (board.lastMove[2] === square.i+1) {
+                    moves.push(new Square(square.i+1, 2));
+                }
+            }
         }
     } else if (p[1] === 'h') {
         if(square.i > 1 && square.j > 0 && !(board[square.i-2][square.j-1][0]===p[0])) moves.push(new Square(square.i-2, square.j-1));
@@ -611,10 +636,18 @@ function makeMove (oldBoard, fromSquare, toSquare)
     } else if (p === 'wp' && toSquare.j === 0) {
         p = 'wq';
     }
-    // finally the regular move
-    newBoard.taken = newBoard[toSquare.i][toSquare.j]; // save for caller
-    newBoard[toSquare.i][toSquare.j] = p;
-    newBoard[fromSquare.i][fromSquare.j] = '';
+    // check for en passant
+    if (p[1] === 'p' && newBoard[toSquare.i][toSquare.j] === '' && toSquare.i !== fromSquare.i) {
+        newBoard.taken = newBoard[toSquare.i][fromSquare.j];
+        newBoard[toSquare.i][toSquare.j] = p;
+        newBoard[toSquare.i][fromSquare.j] = '';
+    } else { // otherwise it's a regular move
+        newBoard.taken = newBoard[toSquare.i][toSquare.j]; // save for caller
+        newBoard[toSquare.i][toSquare.j] = p;
+        newBoard[fromSquare.i][fromSquare.j] = '';
+    }
+    // and record the move
+    newBoard.lastMove = [fromSquare.i, fromSquare.j, toSquare.i, toSquare.j];
     return newBoard;
 }
 
@@ -650,8 +683,8 @@ function computerMove () {
     var computerColor = (gState.userColor === 'w' ? 'b' : 'w');
     var s, bestScore = null;
     var from, bestFrom, bestTo;
-    var moves;
-    var target;
+    var moves, attackers;
+    var trouble;
     // let user know we're working
     gStatusElement.innerHTML = "Thinking...";
     // find the valid move that produces the best score for the computer
@@ -679,8 +712,6 @@ function computerMove () {
                 gState.takenBlack.push(gState.board.taken);
             }
         }
-        gState.computerFrom = bestFrom;
-        gState.computerTo = bestTo;
         // check on state
         if (!canMove(gState.board, gState.userColor)) {
             if (inCheck(gState.board, gState.userColor)) {
@@ -693,7 +724,28 @@ function computerMove () {
         } else if (inCheck(gState.board, gState.userColor)) {
             gStatusElement.innerHTML = "Check.";
         } else {
-            gStatusElement.innerHTML = "Ready.";
+            // if user is losing and a piece other than a pawn is in danger, warn the user
+            trouble = false;
+            s = scoreBoard(gState.board);
+            if ((computerColor === 'w' && s > 1) || (computerColor === 'b' && s < -1)) {
+                for (i = 0; i < 8; ++i) for (j = 0; j < 8; ++j) {
+                    if (gState.board[i][j] !== '' && gState.board[i][j][0] !== computerColor && gState.board[i][j][1] !== 'p') {
+                        attackers = canAttack (gState.board, new Square(i, j));
+                        for (k = 0; k < attackers.length; ++k) {
+                            if (attackers[k][0] === computerColor) {
+                                trouble = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (trouble) break;
+                }
+            }
+            if (trouble) {
+                gStatusElement.innerHTML = "Watch out!";
+            } else {
+                gStatusElement.innerHTML = "Ready.";
+            }
         }
     } else { // no computer move is valid: game over
         if (inCheck(gState.board, computerColor)) {
@@ -728,12 +780,12 @@ function draw () {
         }
     }
     // highlight computer's last move if available
-    if (gState.computerFrom) {
+    if (gState.board.lastMove) {
         gCtx.strokeStyle = kRGBComputerMove;
         gCtx.lineWidth = 3;
         gCtx.beginPath();
-        gCtx.moveTo((gState.computerFrom.i + 0.5)*kTileSize, (gState.computerFrom.j + 0.5)*kTileSize + kTakenSize);
-        gCtx.lineTo((gState.computerTo.i + 0.5)*kTileSize, (gState.computerTo.j + 0.5)*kTileSize + kTakenSize);
+        gCtx.moveTo((gState.board.lastMove[0] + 0.5)*kTileSize, (gState.board.lastMove[1] + 0.5)*kTileSize + kTakenSize);
+        gCtx.lineTo((gState.board.lastMove[2] + 0.5)*kTileSize, (gState.board.lastMove[3] + 0.5)*kTileSize + kTakenSize);
         gCtx.stroke();
     }
     // playing state
